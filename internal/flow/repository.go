@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"io"
@@ -153,11 +154,20 @@ func applyFiles(root string, files []File, planned []string, p Policy) error {
 		plan[n] = true
 	}
 	seen := map[string]bool{}
-	for _, f := range files {
+	normalized := make([]File, len(files))
+	for i, f := range files {
 		if !allowed(f.Path) || !plan[f.Path] || seen[f.Path] {
 			return fmt.Errorf("file not allowed by specification: %s", f.Path)
 		}
 		seen[f.Path] = true
+		// Formatting is deterministic; preserve syntactically invalid output so
+		// vet can report the real syntax error to the implementation stage.
+		if strings.HasSuffix(f.Path, ".go") {
+			if formatted, err := format.Source([]byte(f.Content)); err == nil {
+				f.Content = string(formatted)
+			}
+		}
+		normalized[i] = f
 		if len(f.Content) > p.MaxFileBytes {
 			return fmt.Errorf("file too large: %s", f.Path)
 		}
@@ -165,7 +175,7 @@ func applyFiles(root string, files []File, planned []string, p Policy) error {
 			return e
 		}
 	}
-	for _, f := range files {
+	for _, f := range normalized {
 		dst := filepath.Join(root, f.Path)
 		if e := os.MkdirAll(filepath.Dir(dst), 0755); e != nil {
 			return e

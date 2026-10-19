@@ -45,6 +45,9 @@ import "testing"
 func TestDefault(t *testing.T){s,e:=greet("");if e!=nil||s!="Hello, world!"{t.Fatalf("%q %v",s,e)}}
 func TestTooLong(t *testing.T){if _,e:=greet("12345678901");e==nil{t.Fatal("must reject")}}
 func TestBoundary(t *testing.T){s,e:=greet("1234567890");if e!=nil||s!="Hello, 1234567890!"{t.Fatalf("%q %v",s,e)}}`
+		if m.implementations == 1 {
+			main = strings.Replace(main, `name="world"`, `name="wrong"`, 1)
+		}
 		if m.implementations > 1 {
 			b, e := format.Source([]byte(main))
 			if e != nil {
@@ -121,6 +124,13 @@ func TestPipelineRepairsReviewAndRelease(t *testing.T) {
 	r, e := Load(dir)
 	if e != nil {
 		t.Fatal(e)
+	}
+	firstChecks, err := os.ReadFile(filepath.Join(dir, "checks-004.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(firstChecks), "gofmt: passed") || !strings.Contains(string(firstChecks), "TestDefault") {
+		t.Fatal("generated Go must be formatted before semantic failures reach the repair loop")
 	}
 	if r.Status != "awaiting_release" || r.Repairs != 2 || m.implementations != 3 || m.reviews != 2 {
 		t.Fatalf("bad lifecycle: status=%s repairs=%d implementations=%d reviews=%d", r.Status, r.Repairs, m.implementations, m.reviews)
