@@ -66,7 +66,10 @@ func run() error {
 		task := fs.String("task", "", "development task")
 		rules := fs.String("rules", "", "custom rules directory created by init")
 		runner := fs.String("runner", "docker", "docker (isolated) or local (trusted code only)")
-		offline := fs.Bool("offline", false, "skip AI probe after successful preflight (doctor only)")
+		var offline *bool
+		if cmd == "doctor" {
+			offline = fs.Bool("offline", false, "skip AI probe after successful preflight (doctor only)")
+		}
 		pkg := fs.String("package", ".", "main package to build")
 		publish := fs.Bool("publish", false, "push branch, open draft GitHub PR and publish approved release")
 		githubRepo := fs.String("github-repo", "", "owner/name; required with --publish")

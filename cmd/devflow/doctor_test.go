@@ -233,7 +233,7 @@ func TestMainOfflineFlagOnlyForDoctor(t *testing.T) {
 		t.Fatalf("doctor --offline should parse and run: %v", err)
 	}
 
-	os.Args = []string{"devflow", "status", "--offline"}
+	os.Args = []string{"devflow", "start", "--offline"}
 	if err := run(); err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
 		t.Fatalf("expected unknown flag error for non-doctor command, got: %v", err)
 	}
