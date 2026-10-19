@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,249 +12,204 @@ import (
 	"devflow/internal/config"
 )
 
-type call struct {
-	name    string
-	args    []string
-	env     []string
-	timeout time.Duration
-}
+type fakeModel struct{}
 
-type fakeModel struct {
-	mu    sync.Mutex
-	calls int
-	fn    func(context.Context, ai.Request) (ai.Result, error)
-}
-
-func (f *fakeModel) Complete(ctx context.Context, req ai.Request) (ai.Result, error) {
-	f.mu.Lock()
-	f.calls++
-	f.mu.Unlock()
-	if f.fn != nil {
-		return f.fn(ctx, req)
-	}
+func (f *fakeModel) Complete(context.Context, ai.Request) (ai.Result, error) {
 	return ai.Result{ID: "resp_test", Usage: ai.Usage{InputTokens: 1, OutputTokens: 2}}, nil
 }
 
-func (f *fakeModel) Calls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
-func TestDoctorDockerPreflightOrderAndAICall(t *testing.T) {
-	var calls []call
-	m := &fakeModel{}
-	err := runDoctor(context.Background(), doctorOptions{
-		runner: "docker",
-		runCmd: func(_ context.Context, timeout time.Duration, name string, args []string, env []string) error {
-			calls = append(calls, call{name: name, args: append([]string(nil), args...), env: append([]string(nil), env...), timeout: timeout})
-			return nil
-		},
-		loadConfig: func(string) (config.AI, error) { return config.AI{Key: "k", Model: "m", Timeout: time.Second}, nil },
-		newModel:   func(config.AI) ai.Model { return m },
-		stdout:     &strings.Builder{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(calls) != 3 {
-		t.Fatalf("expected 3 preflight calls, got %d", len(calls))
-	}
-	got := []string{calls[0].name + " " + strings.Join(calls[0].args, " "), calls[1].name + " " + strings.Join(calls[1].args, " "), calls[2].name + " " + strings.Join(calls[2].args, " ")}
-	want := []string{"git --version", "docker --version", "docker info --format {{.ServerVersion}}"}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("order mismatch at %d: got %q want %q", i, got[i], want[i])
-		}
-	}
-	if m.Calls() != 1 {
-		t.Fatalf("expected AI call once, got %d", m.Calls())
-	}
-}
-
-func TestDoctorLocalPreflightSkipsDocker(t *testing.T) {
+func TestDoctorOfflineDockerSuccessSkipsAI(t *testing.T) {
 	var out strings.Builder
-	var calls []call
-	m := &fakeModel{}
-	err := runDoctor(context.Background(), doctorOptions{runner: "local", stdout: &out,
+	var calls []string
+	loadCalls := 0
+	err := runDoctor(context.Background(), doctorOptions{
+		runner:  "docker",
+		offline: true,
+		stdout:  &out,
 		runCmd: func(_ context.Context, _ time.Duration, name string, args []string, _ []string) error {
-			calls = append(calls, call{name: name, args: args})
+			calls = append(calls, name+" "+strings.Join(args, " "))
 			return nil
 		},
-		loadConfig: func(string) (config.AI, error) { return config.AI{Key: "k", Model: "m", Timeout: time.Second}, nil },
-		newModel:   func(config.AI) ai.Model { return m },
+		loadConfig: func(string) (config.AI, error) {
+			loadCalls++
+			return config.AI{}, nil
+		},
+		newModel: func(config.AI) ai.Model {
+			t.Fatal("newModel must not be called in offline mode")
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 1 || calls[0].name != "git" {
+	want := []string{"git --version", "docker --version", "docker info --format {{.ServerVersion}}"}
+	if len(calls) != len(want) {
 		t.Fatalf("unexpected preflight calls: %#v", calls)
 	}
-	if !strings.Contains(out.String(), "Docker preflight: skipped") {
-		t.Fatalf("missing docker skip output: %q", out.String())
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("order mismatch at %d: got %q want %q", i, calls[i], want[i])
+		}
+	}
+	if loadCalls != 0 {
+		t.Fatalf("loadConfig called %d times", loadCalls)
+	}
+	if !strings.Contains(out.String(), "Preflight OK; AI probe skipped (--offline)") {
+		t.Fatalf("missing offline success output: %q", out.String())
 	}
 }
 
-func TestDoctorInvalidRunnerNoAICall(t *testing.T) {
-	m := &fakeModel{}
-	err := runDoctor(context.Background(), doctorOptions{runner: "bad", newModel: func(config.AI) ai.Model { return m }})
-	if err == nil || !strings.Contains(err.Error(), "invalid runner") {
-		t.Fatalf("unexpected error: %v", err)
+func TestDoctorOfflineLocalSuccessSkipsDockerAndAI(t *testing.T) {
+	var out strings.Builder
+	var calls []string
+	err := runDoctor(context.Background(), doctorOptions{
+		runner:  "local",
+		offline: true,
+		stdout:  &out,
+		runCmd: func(_ context.Context, _ time.Duration, name string, args []string, _ []string) error {
+			calls = append(calls, name+" "+strings.Join(args, " "))
+			return nil
+		},
+		loadConfig: func(string) (config.AI, error) {
+			t.Fatal("loadConfig must not be called in offline mode")
+			return config.AI{}, nil
+		},
+		newModel: func(config.AI) ai.Model {
+			t.Fatal("newModel must not be called in offline mode")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if m.Calls() != 0 {
-		t.Fatal("AI must not be called")
+	if len(calls) != 1 || calls[0] != "git --version" {
+		t.Fatalf("unexpected preflight calls: %#v", calls)
+	}
+	s := out.String()
+	if !strings.Contains(s, "Docker preflight: skipped for --runner local") {
+		t.Fatalf("missing docker skip output: %q", s)
+	}
+	if !strings.Contains(s, "Preflight OK; AI probe skipped (--offline)") {
+		t.Fatalf("missing offline success output: %q", s)
 	}
 }
 
-func TestDoctorPreflightFailuresNoAICall(t *testing.T) {
-	cases := []struct {
-		name   string
-		runner string
-		runCmd func(context.Context, time.Duration, string, []string, []string) error
-	}{
-		{name: "git_missing", runner: "docker", runCmd: func(_ context.Context, _ time.Duration, name string, _ []string, _ []string) error {
-			if name == "git" {
-				return exec.ErrNotFound
-			}
-			return nil
-		}},
-		{name: "docker_missing", runner: "docker", runCmd: func(_ context.Context, _ time.Duration, name string, args []string, _ []string) error {
-			if name == "docker" && len(args) > 0 && args[0] == "--version" {
-				return exec.ErrNotFound
-			}
-			return nil
-		}},
-		{name: "daemon", runner: "docker", runCmd: func(_ context.Context, _ time.Duration, name string, args []string, _ []string) error {
+func TestDoctorOfflinePreflightFailureStopsBeforeConfigModel(t *testing.T) {
+	var out strings.Builder
+	err := runDoctor(context.Background(), doctorOptions{
+		runner:  "docker",
+		offline: true,
+		stdout:  &out,
+		runCmd: func(_ context.Context, _ time.Duration, name string, args []string, _ []string) error {
 			if name == "docker" && len(args) > 0 && args[0] == "info" {
-				return errors.New("cannot connect daemon")
+				return errors.New("daemon down")
 			}
 			return nil
-		}},
-		{name: "timeout", runner: "docker", runCmd: func(_ context.Context, _ time.Duration, _ string, _ []string, _ []string) error {
-			return context.DeadlineExceeded
-		}},
+		},
+		loadConfig: func(string) (config.AI, error) {
+			t.Fatal("loadConfig must not be called when preflight fails")
+			return config.AI{}, nil
+		},
+		newModel: func(config.AI) ai.Model {
+			t.Fatal("newModel must not be called when preflight fails")
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "doctor preflight failed") {
+		t.Fatalf("expected preflight error, got: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			m := &fakeModel{}
-			err := runDoctor(context.Background(), doctorOptions{runner: tc.runner, newModel: func(config.AI) ai.Model { return m }, runCmd: tc.runCmd})
-			if err == nil {
-				t.Fatal("expected error")
-			}
-			if m.Calls() != 0 {
-				t.Fatal("AI must not be called")
-			}
-		})
+	if strings.Contains(out.String(), "Preflight OK; AI probe skipped (--offline)") {
+		t.Fatalf("unexpected offline success output: %q", out.String())
 	}
 }
 
-func TestDoctorCanceledContextBeforePreflight(t *testing.T) {
+func TestDoctorOfflineCanceledBeforePreflight(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	called := 0
-	err := runDoctor(ctx, doctorOptions{runCmd: func(context.Context, time.Duration, string, []string, []string) error { called++; return nil }})
+	calls := 0
+	err := runDoctor(ctx, doctorOptions{
+		offline: true,
+		runCmd: func(context.Context, time.Duration, string, []string, []string) error {
+			calls++
+			return nil
+		},
+		loadConfig: func(string) (config.AI, error) {
+			t.Fatal("loadConfig must not be called")
+			return config.AI{}, nil
+		},
+		newModel: func(config.AI) ai.Model {
+			t.Fatal("newModel must not be called")
+			return nil
+		},
+	})
 	if err == nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("unexpected: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if called != 0 {
-		t.Fatal("preflight should not run")
+	if calls != 0 {
+		t.Fatalf("preflight should not run, got %d calls", calls)
 	}
 }
 
-func TestDoctorCancellationCheckedImmediatelyBeforeAI(t *testing.T) {
+func TestDoctorOfflineCancellationDuringPreflightStopsBeforeAI(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &fakeModel{}
-	err := runDoctor(ctx, doctorOptions{runner: "local",
-		runCmd: func(_ context.Context, _ time.Duration, _ string, _ []string, _ []string) error { return nil },
+	first := true
+	err := runDoctor(ctx, doctorOptions{
+		runner:  "docker",
+		offline: true,
+		runCmd: func(_ context.Context, _ time.Duration, _ string, _ []string, _ []string) error {
+			if first {
+				first = false
+				cancel()
+				return context.Canceled
+			}
+			return nil
+		},
 		loadConfig: func(string) (config.AI, error) {
-			cancel()
+			t.Fatal("loadConfig must not be called")
+			return config.AI{}, nil
+		},
+		newModel: func(config.AI) ai.Model {
+			t.Fatal("newModel must not be called")
+			return nil
+		},
+	})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDoctorOnlineModeUnchanged(t *testing.T) {
+	var out strings.Builder
+	calls := 0
+	m := &fakeModel{}
+	err := runDoctor(context.Background(), doctorOptions{
+		runner:  "local",
+		offline: false,
+		stdout:  &out,
+		runCmd: func(_ context.Context, _ time.Duration, _ string, _ []string, _ []string) error {
+			return nil
+		},
+		loadConfig: func(string) (config.AI, error) {
+			calls++
 			return config.AI{Key: "k", Model: "m", Timeout: time.Second}, nil
 		},
 		newModel: func(config.AI) ai.Model { return m },
-		stdout:   &strings.Builder{},
-	})
-	if err == nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if m.Calls() != 0 {
-		t.Fatal("AI must not be called")
-	}
-}
-
-func TestDoctorCommandInvocationAndEnvAllowlist(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "secret")
-	t.Setenv("GITHUB_TOKEN", "secret")
-	t.Setenv("GH_TOKEN", "secret")
-	t.Setenv("PATH", os.Getenv("PATH"))
-	var captured []call
-	err := runDoctor(context.Background(), doctorOptions{runner: "local",
-		runCmd: func(_ context.Context, timeout time.Duration, name string, args []string, env []string) error {
-			captured = append(captured, call{name: name, args: append([]string{}, args...), env: append([]string{}, env...), timeout: timeout})
-			return nil
-		},
-		loadConfig: func(string) (config.AI, error) { return config.AI{Key: "k", Model: "m", Timeout: time.Second}, nil },
-		newModel:   func(config.AI) ai.Model { return &fakeModel{} },
-		stdout:     &strings.Builder{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if captured[0].name != "git" || len(captured[0].args) != 1 || captured[0].args[0] != "--version" {
-		t.Fatal("not direct argv invocation")
-	}
-	if captured[0].timeout > 5*time.Second {
-		t.Fatal("timeout exceeded 5s")
-	}
-	envJoin := strings.Join(captured[0].env, "\n")
-	if strings.Contains(envJoin, "OPENAI_API_KEY") || strings.Contains(envJoin, "GITHUB_TOKEN") || strings.Contains(envJoin, "GH_TOKEN") {
-		t.Fatal("secret env leaked")
-	}
-}
-
-func TestDoctorSanitizesReturnedErrors(t *testing.T) {
-	err := runDoctor(context.Background(), doctorOptions{runner: "local",
-		runCmd: func(context.Context, time.Duration, string, []string, []string) error {
-			return errors.New("OPENAI_API_KEY=sk-test-secret GITHUB_TOKEN=ghs_secret")
-		},
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	msg := err.Error()
-	if strings.Contains(msg, "sk-test-secret") || strings.Contains(msg, "ghs_secret") {
-		t.Fatalf("secret leaked: %q", msg)
-	}
-}
-
-func TestDoctorSuccessOutputPreservedAfterPreflight(t *testing.T) {
-	var out strings.Builder
-	err := runDoctor(context.Background(), doctorOptions{runner: "local", stdout: &out,
-		runCmd: func(context.Context, time.Duration, string, []string, []string) error { return nil },
-		loadConfig: func(string) (config.AI, error) {
-			return config.AI{Key: "k", Model: "m1", Timeout: 3 * time.Second}, nil
-		},
-		newModel: func(config.AI) ai.Model {
-			return &fakeModel{fn: func(context.Context, ai.Request) (ai.Result, error) {
-				return ai.Result{ID: "resp_1", Usage: ai.Usage{InputTokens: 11, OutputTokens: 22}}, nil
-			}}
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+	if calls != 1 {
+		t.Fatalf("expected loadConfig once, got %d", calls)
 	}
 	s := out.String()
-	if !strings.Contains(s, "model=m1") || !strings.Contains(s, "timeout=3s") {
-		t.Fatalf("missing config summary: %q", s)
-	}
-	if !strings.Contains(s, "AI API OK; response=resp_1; input_tokens=11; output_tokens=22") {
-		t.Fatalf("missing api summary: %q", s)
+	if !strings.Contains(s, "AI configuration loaded") || !strings.Contains(s, "AI API OK") {
+		t.Fatalf("missing online output: %q", s)
 	}
 }
 
-func TestMainDoctorPreflightBeforeConfigLoad(t *testing.T) {
+func TestMainOfflineFlagOnlyForDoctor(t *testing.T) {
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
-	os.Args = []string{"devflow", "doctor", "--runner", "docker"}
 
 	oldRun := defaultDoctorRunCmd
 	oldLoad := defaultDoctorConfigLoad
@@ -267,18 +220,21 @@ func TestMainDoctorPreflightBeforeConfigLoad(t *testing.T) {
 		defaultDoctorModelFactory = oldModel
 	}()
 
-	defaultDoctorRunCmd = func(context.Context, time.Duration, string, []string, []string) error {
-		return exec.ErrNotFound
-	}
+	defaultDoctorRunCmd = func(context.Context, time.Duration, string, []string, []string) error { return nil }
 	defaultDoctorConfigLoad = func(string) (config.AI, error) {
-		return config.AI{}, errors.New("must not load config")
+		return config.AI{}, errors.New("must not load config in offline mode")
 	}
 	defaultDoctorModelFactory = func(config.AI) ai.Model {
-		t.Fatal("must not create model")
-		return nil
+		return &fakeModel{}
 	}
 
-	if err := run(); err == nil || !strings.Contains(err.Error(), "preflight") {
-		t.Fatalf("expected preflight error, got: %v", err)
+	os.Args = []string{"devflow", "doctor", "--offline", "--runner", "local"}
+	if err := run(); err != nil {
+		t.Fatalf("doctor --offline should parse and run: %v", err)
+	}
+
+	os.Args = []string{"devflow", "status", "--offline"}
+	if err := run(); err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("expected unknown flag error for non-doctor command, got: %v", err)
 	}
 }

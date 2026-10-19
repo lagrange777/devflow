@@ -20,6 +20,7 @@ type doctorModelFactory func(c config.AI) ai.Model
 
 type doctorOptions struct {
 	runner     string
+	offline    bool
 	envFile    string
 	runCmd     doctorCommandRunner
 	loadConfig doctorConfigLoader
@@ -66,6 +67,14 @@ func runDoctor(ctx context.Context, opts doctorOptions) error {
 		}
 	} else {
 		fmt.Fprintln(opts.stdout, "Docker preflight: skipped for --runner local")
+	}
+
+	if opts.offline {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("doctor preflight canceled: %w", err)
+		}
+		fmt.Fprintln(opts.stdout, "Preflight OK; AI probe skipped (--offline)")
+		return nil
 	}
 
 	c, err := opts.loadConfig(opts.envFile)
