@@ -1,0 +1,19 @@
+{
+  "max_repairs": 3,
+  "max_context_bytes": 240000,
+  "max_changed_files": 20,
+  "max_file_bytes": 100000,
+  "command_timeout_seconds": 180,
+  "require_test_mapping": true,
+  "require_release_approval": true,
+  "rules": [
+    "Stages execute in order; missing or modified predecessor artifacts block progress.",
+    "Every acceptance criterion must have at least one test case; IDs must be unique.",
+    "Tests must include positive, negative and boundary scenarios.",
+    "Only files declared in the specification may change. Symlinks, secrets and Git internals are forbidden.",
+    "Every case must map to an executed Go test in the isolated worktree.",
+    "gofmt, go vet, go test and go build must pass before PR preparation and after fixes.",
+    "Review belongs to an exact commit and tree; any change requires another review.",
+    "Release requires explicit approval of the tested SHA and a version; published releases require a merged PR."
+  ]
+}
