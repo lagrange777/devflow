@@ -16,6 +16,10 @@ import (
 	"devflow/internal/flow"
 )
 
+var defaultDoctorRunCmd doctorCommandRunner = doctorExecCommand
+var defaultDoctorConfigLoad doctorConfigLoader = config.Load
+var defaultDoctorModelFactory doctorModelFactory = func(c config.AI) ai.Model { return ai.New(c) }
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "devflow:", err)
@@ -72,6 +76,9 @@ func run() error {
 		if e := fs.Parse(os.Args[2:]); e != nil {
 			return e
 		}
+		if cmd == "doctor" {
+			return runDoctor(ctx, doctorOptions{runner: *runner, envFile: *env, runCmd: defaultDoctorRunCmd, loadConfig: defaultDoctorConfigLoad, newModel: defaultDoctorModelFactory, stdout: os.Stdout})
+		}
 		engine := flow.Engine{Log: func(s string) { fmt.Println(s) }}
 		if cmd == "release" {
 			if *dir == "" {
@@ -88,15 +95,6 @@ func run() error {
 			return e
 		}
 		engine.Model = ai.New(c)
-		if cmd == "doctor" {
-			fmt.Printf("AI configuration loaded; model=%s; timeout=%s; key is present (hidden)\n", c.Model, c.Timeout)
-			result, e := engine.Model.Complete(ctx, ai.Request{Stage: "doctor", Instructions: "Return a JSON report with the word OK. No other work.", Input: "Check API connectivity.", Schema: map[string]any{"type": "object", "properties": map[string]any{"report": map[string]any{"type": "string"}}, "required": []string{"report"}, "additionalProperties": false}})
-			if e != nil {
-				return e
-			}
-			fmt.Printf("AI API OK; response=%s; input_tokens=%d; output_tokens=%d\n", result.ID, result.Usage.InputTokens, result.Usage.OutputTokens)
-			return nil
-		}
 		if cmd == "start" {
 			if *repo == "" || strings.TrimSpace(*task) == "" {
 				return fmt.Errorf("--repo and --task required")
