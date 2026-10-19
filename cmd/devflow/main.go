@@ -66,6 +66,10 @@ func run() error {
 		task := fs.String("task", "", "development task")
 		rules := fs.String("rules", "", "custom rules directory created by init")
 		runner := fs.String("runner", "docker", "docker (isolated) or local (trusted code only)")
+		var offline *bool
+		if cmd == "doctor" {
+			offline = fs.Bool("offline", false, "skip AI probe after successful preflight (doctor only)")
+		}
 		pkg := fs.String("package", ".", "main package to build")
 		publish := fs.Bool("publish", false, "push branch, open draft GitHub PR and publish approved release")
 		githubRepo := fs.String("github-repo", "", "owner/name; required with --publish")
@@ -77,7 +81,7 @@ func run() error {
 			return e
 		}
 		if cmd == "doctor" {
-			return runDoctor(ctx, doctorOptions{runner: *runner, envFile: *env, runCmd: defaultDoctorRunCmd, loadConfig: defaultDoctorConfigLoad, newModel: defaultDoctorModelFactory, stdout: os.Stdout})
+			return runDoctor(ctx, doctorOptions{runner: *runner, offline: *offline, envFile: *env, runCmd: defaultDoctorRunCmd, loadConfig: defaultDoctorConfigLoad, newModel: defaultDoctorModelFactory, stdout: os.Stdout})
 		}
 		engine := flow.Engine{Log: func(s string) { fmt.Println(s) }}
 		if cmd == "release" {
